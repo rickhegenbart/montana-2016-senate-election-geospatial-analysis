@@ -1,0 +1,276 @@
+---
+title: "R Notebook"
+output:
+  html_notebook: default
+  html_document:
+    df_print: paged
+  pdf_document: default
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r}
+library(tidyverse)
+library(leaflet)
+library(sf)
+library(readxl)
+library(DT)
+library(plotly)
+library(broom)
+library(tidycensus)
+```
+
+```{r}
+senate_counties <- read_xlsx("Statewide Results.xlsx", sheet = 1)
+```
+This loads the data.
+
+```{r}
+senate_counties <- read_xlsx("Statewide Results.xlsx", sheet = 1, range = "B7:E63")
+```
+This loads the data.
+
+```{r}
+glimpse(senate_counties)
+```
+
+```{r include=FALSE}
+census_api_key("415c7b9b938b2032bb48c2a0203b0059ceece209", overwrite = TRUE, install = TRUE)
+
+```
+
+```{r include=FALSE}
+mt_counties <- get_acs(geography = "county",
+                       variables = "B01003_001",
+                       state = "MT",
+                       geometry = TRUE) 
+```
+
+
+This shows a preview of data.
+
+```{r}
+senate_counties <- senate_counties %>% 
+  rename(Republican = "MATT ROSENDALE\r\nRepublican") %>% 
+  rename(Democrat = "JON TESTER\r\nDemocrat") %>% 
+  rename(Libertarian = "RICK BRECKENRIDGE\r\nLibertarian")
+```
+
+```{r}
+
+senate_counties <- senate_counties %>% 
+  mutate(total_votes = Republican + Democrat + Libertarian) %>% 
+  mutate(Repub_advantage = Republican/total_votes - Democrat/total_votes) %>% 
+  mutate(Repub_advantage = round(Repub_advantage*100, 1))
+  senate_counties %>% 
+  arrange(-Repub_advantage)
+```
+This is a table showing the the votes for the candidates by county a long with the republican advantage of each county.
+
+```{r}
+mt_counties <- get_acs(geography = "county",
+                       variables = "B01003_001",
+                       state = "MT",
+                       geometry = TRUE) 
+```
+This gets data for state.
+```{r}
+
+senate_counties[25, "County"] <- "Lewis and Clark"              # Changes  "&" "and"
+
+mt_counties <- mt_counties %>% 
+  mutate(County = gsub(" County, Montana", "", NAME)) %>%      # Removes unnecessary words
+  rename(Population = estimate)                                # Renames the 'estimate' to 'Population'
+```
+This is just replacing and with & from two mismatched titles.
+```{r}
+senate_election <- mt_counties %>% 
+  full_join(senate_counties)
+```
+This joins the data from mt counties with the senate race data.
+```{r}
+senate_election %>%
+  as_tibble() %>% 
+  select(County, Population, Democrat, Republican, Libertarian, total_votes, Repub_advantage) %>% 
+  datatable()
+```
+This is a table showing the counties with thier population and the votes per candidate with the republican advantage.
+```{r}
+
+vote_colors <- colorNumeric(palette = "viridis", domain = senate_election$Repub_advantage)
+
+senate_election %>%
+  leaflet() %>% 
+  addTiles() %>%
+  addPolygons(weight = 1,
+              fillColor = ~vote_colors(Repub_advantage), 
+              label = ~paste0(County, ", Republican advantage = ", Repub_advantage),
+              highlight = highlightOptions(weight = 2)) %>% 
+  setView(-110, 47, zoom = 6) %>% 
+  addLegend(pal = vote_colors, values = ~Repub_advantage)
+
+```
+This shows the republican advantage by county. The lighter or more toward yellow indicates a stronger advantage.
+
+```{r}
+senate_election %>%
+  plot_ly(x = ~Population, 
+          y = ~Repub_advantage,
+          hoverinfo = "text", 
+          text = ~paste("County:", 
+                        County, "<br>", 
+                        "Population: ", Population, "<br>", 
+                        "Republican advantage: ", Repub_advantage)) %>% 
+  add_markers(marker = list(opacity = 0.7)) %>%
+  layout(title = "Predicting Republican Vote Advantage from Population, by County",
+         xaxis = list(title = "County population"),
+         yaxis = list(title = "Republican vote advantage"))
+```
+This is a plotly graph idicating a negative correllation.
+```{r}
+pop_model <- lm(Repub_advantage ~ Population, data = senate_election)
+
+```
+This is a linear regression.
+```{r}
+summary(pop_model)
+```
+This is a summary of the regression results.
+```{r}
+tidy(pop_model)
+glance(pop_model)
+```
+This shows the information in a cleaner way.
+
+```{r}
+senate_election %>%
+  plot_ly(x = ~Population, 
+          y = ~Repub_advantage,
+          hoverinfo = "text", 
+          text = ~paste("County:", 
+                        County, "<br>", 
+                        "Population: ", Population, "<br>", 
+                        "Republican advantage: ", Repub_advantage)) %>% 
+  add_markers(showlegend = F, marker = list(opacity = 0.7)) %>%
+  layout(title = "Predicting Republican Vote Advantage from Population, by County",
+         xaxis = list(title = "County population"),
+         yaxis = list(title = "Republican vote advantage")) %>%
+  add_lines(y = ~fitted(pop_model))
+```
+This predicts the republican vote advantage from population and by county.
+
+```{r echo=TRUE}
+senate_election <- senate_election %>% 
+  mutate(Longitude = as_tibble(st_coordinates(st_centroid(senate_election$geometry)))$X) %>% 
+  mutate(Latitude = as_tibble(st_coordinates(st_centroid(senate_election$geometry)))$Y)
+```
+```{r}
+senate_election %>%
+  leaflet() %>% 
+  addTiles() %>%
+  addPolygons(weight = 1) %>% 
+  setView(-110, 47, zoom = 6) %>% 
+addCircleMarkers(~Longitude, ~Latitude)
+```
+This is just another graph showing the center of counties.
+```{r}
+senate_election %>%
+  plot_ly(x = ~Longitude, y = ~Repub_advantage) %>% 
+  add_markers()
+```
+This is a plotly graph of the longitute and republican vote indicating a positive correlation that the further east the more votes for republican.
+```{r}
+longitude_lm <- lm(Repub_advantage ~ Longitude, data = senate_election)
+tidy(longitude_lm)
+glance(longitude_lm)
+```
+This is a regression predicting republican vote from longitude.
+```{r}
+senate_election %>% 
+  plot_ly(x = ~Longitude, 
+          y = ~Repub_advantage,
+          hoverinfo = "text", 
+          text = ~paste("County:", County, "<br>", "Longitude: ", Longitude, "<br>", "Republican advantage: ", Repub_advantage)) %>% 
+  add_markers(marker = list(opacity = 0.7), showlegend = F) %>%
+  layout(title = "Predicting Republican Vote Advantage from Longitude, by County",
+         xaxis = list(title = "County longitude"),
+         yaxis = list(title = "Republican vote advantage")) %>% 
+  add_lines(y = ~fitted(longitude_lm))
+```
+This is a plotly graph predicting the republican vote advantage from longitude, by county.
+```{r}
+multiple_lm <- lm(Repub_advantage ~ Population + Longitude, data = senate_election)
+tidy(multiple_lm)
+glance(multiple_lm)
+```
+This is a multiple regression, predicting the Republican advantage from both Population and Longitude at the same time.
+```{r}
+senate_election %>% 
+  plot_ly(x = ~Longitude, y = ~Population, z = ~Repub_advantage, 
+          text = ~County, hoverinfo = "text") %>% 
+  add_markers(opacity = .7, showlegend = F)
+```
+This is a 3D scatterplot showing the republican advantage, population, and votes per longitudinal data.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
